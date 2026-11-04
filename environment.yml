@@ -1,0 +1,14 @@
+# Conda environment for the directional-noise interferometry project.
+#   conda env create -f environment.yml
+#   conda activate ambient-noise
+name: ambient-noise
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy>=1.26
+  - scipy>=1.11
+  - matplotlib>=3.8
+  - panel>=1.4
+  - jupyter
+  - ipykernel

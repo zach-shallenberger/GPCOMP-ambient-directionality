@@ -27,9 +27,11 @@ Noise sources sit on a 12 km ring around the station pair. By reciprocity, two i
 ```bash
 git clone https://github.com/zach-shallenberger/GPCOMP-ambient-directionality.git
 cd GPCOMP-ambient-directionality
-python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+conda env create -f environment.yml     # isolated env named "ambient-noise"
+conda activate ambient-noise
 ```
+
+No conda? Use a virtual environment instead: `python -m venv .venv`, activate it (`source .venv/bin/activate`, or `.venv\Scripts\activate` on Windows), then `pip install -r requirements.txt`.
 
 **Interactive app.** Run `panel serve app.py --show`. A browser tab opens, and the first solve takes about 15 s. Pick a station spacing and heterogeneity level and press *Run solver*. Then drag the noise-direction, concentration, background, and frequency sliders: these update instantly.
 

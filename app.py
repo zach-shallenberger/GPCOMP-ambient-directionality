@@ -24,25 +24,43 @@ CACHE_DIR = Path(__file__).parent / ".cache"
 GRIDS = {"fast (dx = 100 m)": 0.1, "standard (dx = 50 m)": S.DX}
 
 
-def experiment(dx, r_km, het_pct, progress=None):
-    """Two FD impulse runs for a station pair, cached in memory (shared by all browser
-    sessions) and on disk, so restarting the app does not re-run the solver."""
-    key = f"pair_dx{1000 * dx:.0f}m_r{r_km}km_het{het_pct}"
+def cached(key, build):
+    """Return build() cached in memory (shared by all browser sessions) and on disk
+    (.cache/), so restarting the app never re-runs a solve it has already done."""
     mem = pn.state.cache.setdefault("experiments", {})
-    if key in mem:
-        return mem[key]
-    path = CACHE_DIR / f"{key}.pkl"
-    if path.exists():
-        exp = pickle.loads(path.read_bytes())
-    else:
-        m = S.Model(dx=dx)
-        if het_pct > 0:
-            m = S.Model(dx=dx, c=S.random_medium(m, rel_std=het_pct / 100, corr_len=0.1, seed=1))
-        exp = S.PairExperiment(m, r=r_km, progress=progress)
-        CACHE_DIR.mkdir(exist_ok=True)
-        path.write_bytes(pickle.dumps(exp))
-    mem[key] = exp
-    return exp
+    if key not in mem:
+        path = CACHE_DIR / f"{key}.pkl"
+        if path.exists():
+            mem[key] = pickle.loads(path.read_bytes())
+        else:
+            mem[key] = build()
+            CACHE_DIR.mkdir(exist_ok=True)
+            path.write_bytes(pickle.dumps(mem[key]))
+    return mem[key]
+
+
+def make_model(dx, het_pct):
+    m = S.Model(dx=dx)
+    if het_pct > 0:
+        m = S.Model(dx=dx, c=S.random_medium(m, rel_std=het_pct / 100, corr_len=0.1, seed=1))
+    return m
+
+
+def experiment(dx, r_km, het_pct, progress=None):
+    """Two FD impulse runs for one station pair."""
+    return cached(f"pair_dx{1000 * dx:.0f}m_r{r_km}km_het{het_pct}",
+                  lambda: S.PairExperiment(make_model(dx, het_pct), r=r_km, progress=progress))
+
+
+def fiber_experiment(dx, het_pct, progress=None):
+    """One FD impulse run per node of the L-shaped DAS cable (run in parallel)."""
+    def build():
+        m = make_model(dx, het_pct)
+        nodes, sources, legs = S.das_layout(m)
+        F = S.FiberExperiment(m, nodes, sources, progress=progress)
+        F.legs = legs
+        return F
+    return cached(f"fiber_dx{1000 * dx:.0f}m_het{het_pct}", build)
 
 
 # ---------------------------------------------------------------- widgets
@@ -165,6 +183,121 @@ True travel time r/c = {exp.r / exp.model.c0:.2f} s; wavelength {lam:.2f} km; sp
         table)
 
 
+# ---------------------------------------------------------------- DAS fiber tab
+NOISE = ["road parallel", "road perpendicular", "road oblique", "ring (isotropic)",
+         "ring (directional: sidebar θ₀, κ, ε)"]
+w_noise = pn.widgets.Select(name="Noise source", options=NOISE, value="road oblique")
+w_leg = pn.widgets.Select(name="Cable leg for the gather", options=["x-leg", "y-leg"], value="x-leg")
+w_gauge = pn.widgets.Select(name="Gauge length (m)", options=[200, 400, 800], value=200)
+w_drun = pn.widgets.Button(name="Run DAS analysis", button_type="primary")
+dbar = pn.indicators.Progress(name="fiber solver", value=0, max=100, visible=False)
+dstatus = pn.pane.Markdown("The first run solves one FD problem per cable node (about 120 on the "
+                           "fast grid, in parallel; cached afterwards).")
+dout = pn.Column()
+
+
+def noise_weights(F, choice, th, k, eps):
+    if choice.startswith("ring (directional"):
+        w = np.zeros(len(F.src_xy)); r = F.groups["ring"]
+        w[r] = S.source_density(np.arctan2(F.src_xy[r, 1], F.src_xy[r, 0]), th, k, eps)
+        return w / w.sum()
+    return F.weights("ring" if choice.startswith("ring") else choice)
+
+
+def das_analysis(F, choice, leg, gauge, th, k, eps, fc):
+    """Virtual shot gather and velocity error vs offset on one leg, plus the
+    L-cable leg selection (branch asymmetry) at 2.5 km offset."""
+    idx = np.arange(len(F.xy)); dch = F.das_channels(gauge)
+    chans = {"x-leg": np.intersect1d(idx[F.legs["x-leg"]], dch),
+             "y-leg": np.intersect1d(idx[F.legs["y-leg"]], dch)[::-1]}   # from the corner outwards
+    w, w_iso = noise_weights(F, choice, th, k, eps), F.weights("ring")
+    src, ch = chans[leg][0], chans[leg][3:]
+    off, dv_das = F.offset_bias(w, "das", gauge, src, ch, fc, w_ref=w_iso)
+    _, dv_geo = F.offset_bias(w, "geo", gauge, src, ch, fc, w_ref=w_iso)
+    G = F.gather(w, "das", gauge, src, ch, fc)
+    sel = {}
+    for l, cs in chans.items():
+        o_l, d_l = F.offset_bias(w, "das", gauge, cs[0], cs[3:], fc, w_ref=w_iso)
+        i = np.argmin(np.abs(o_l - 2.5))
+        C = F.gather(w, "das", gauge, cs[0], [cs[3:][i]], fc)[0]
+        t = o_l[i] / F.model.c0
+        win = lambda sg: np.abs(F.lags - sg * t) < 1.5 / fc
+        sel[l] = (d_l[i], 10 * np.log10(np.sum(C[win(1)] ** 2) / np.sum(C[win(-1)] ** 2)), o_l[i])
+    return dict(F=F, w=w, src=src, ch=ch, off=off, dv_das=dv_das, dv_geo=dv_geo, G=G, sel=sel, fc=fc,
+                pred=S.das_bias_prediction(off, fc, F.model.c0, gauge))
+
+
+def das_figs(o, choice):
+    F = o["F"]
+    f1 = Figure(figsize=(4.4, 4.2)); ax = f1.subplots()
+    on = o["w"] > 0
+    ax.scatter(*F.src_xy[on].T, c=o["w"][on], s=6, cmap="viridis")
+    ax.plot(*F.xy.T, "k-", lw=3)
+    ax.plot(*F.xy[o["src"]], "r*", ms=12)
+    ax.set(aspect="equal", xlabel="x (km)", ylabel="y (km)", title=f"Fiber and noise: {choice}")
+    f1.tight_layout()
+
+    f2 = Figure(figsize=(4.8, 4.2)); ax = f2.subplots()
+    G = o["G"]; off = o["off"]
+    ax.imshow((G / np.abs(G).max()).T, aspect="auto", cmap="RdBu_r", vmin=-0.5, vmax=0.5,
+              extent=[off[0], off[-1], F.lags[-1], F.lags[0]])
+    for s in (1, -1):
+        ax.plot(off, s * off / F.model.c0, "k--", lw=1)
+    ax.set(ylim=(-4, 4), xlabel="offset (km)", ylabel="lag (s)", title="DAS virtual shot gather")
+    f2.tight_layout()
+
+    f3 = Figure(figsize=(7.5, 3.6)); ax = f3.subplots()
+    m = off >= F.model.c0 / o["fc"]        # below one wavelength the two branches overlap
+    ax.plot(off[m], o["dv_geo"][m], "o-", ms=3, label="geophone channels")
+    ax.plot(off[m], o["dv_das"][m], "o-", ms=3, label="DAS channels")
+    ax.plot(off[m], o["pred"][m], "k--", lw=1, label="DAS instrument bias, isotropic theory")
+    ax.axhline(0, color="k", lw=0.6)
+    ax.set(xlabel="offset (km)", ylabel="apparent velocity error δc/c (%)", ylim=(-15, 15),
+           title="Interferometric velocity error vs offset (offsets ≥ 1 wavelength)")
+    ax.legend(fontsize=8); f3.tight_layout()
+    return f1, f2, f3
+
+
+async def run_das(_=None):
+    dx, het = GRIDS[w_grid.value], w_het.value
+    th, k, eps, fc = np.radians(w_th.value), w_k.value, w_eps.value, w_fc.value
+    gauge = w_gauge.value / 1000
+    w_drun.disabled, dbar.visible, dbar.value = True, True, 0
+    dstatus.object = "*Solving / loading the fiber (one FD run per cable node)...*"
+    t0 = time.time()
+
+    def progress(q):
+        dbar.value = int(100 * q)
+        print(f"  fiber FD solver: {100 * q:3.0f}%", flush=True)
+
+    try:
+        F = await asyncio.to_thread(fiber_experiment, dx, het, progress)
+        o = await asyncio.to_thread(das_analysis, F, w_noise.value, w_leg.value, gauge, th, k, eps, fc)
+        best = max(o["sel"], key=lambda l: abs(o["sel"][l][1]))
+        fixed = o["sel"][best][0] - S.das_bias_prediction(o["sel"][best][2], fc, F.model.c0, gauge)
+        rows = "\n".join(f"| {l} | {v[0]:+.2f} % | {v[1]:+.1f} dB |" for l, v in o["sel"].items())
+        f1, f2, f3 = das_figs(o, w_noise.value)
+        mp = lambda f: pn.pane.Matplotlib(f, tight=True, format="svg")
+        dout.objects = [pn.Row(mp(f1), mp(f2)), mp(f3), pn.pane.Markdown(
+            f"**L-cable mitigation at 2.5 km offset**\n\n| leg | δc/c (DAS) | causal/acausal asymmetry |\n"
+            f"|---|---|---|\n{rows}\n\nUse the leg with the larger |asymmetry| (noise near its "
+            f"endfire): **{best}**. After subtracting the DAS instrument bias: **{fixed:+.2f} %**.")]
+        dstatus.object = f"Done in {time.time() - t0:.1f} s."
+    except Exception as err:
+        dstatus.object = f"**DAS analysis failed:** {err!r}"
+        raise
+    finally:
+        w_drun.disabled, dbar.visible = False, False
+
+
+w_drun.on_click(run_das)
+das_tab = pn.Column(
+    pn.pane.Markdown("An L-shaped fiber (two 6 km legs, 50/100 m channels) records traffic or "
+                     "far-field noise. Compare DAS (axial strain) with geophone channels, and pick "
+                     "the leg whose noise arrives near endfire."),
+    pn.Row(w_noise, w_leg, w_gauge), pn.Row(w_drun), dbar, dstatus, dout)
+
+
 controls = pn.Column(
     "### Medium & stations", w_grid, w_r, w_het, w_run, bar, status,
     "### Noise field (instant)", w_th, w_k, w_eps,
@@ -175,5 +308,7 @@ controls = pn.Column(
 )
 pn.template.FastListTemplate(
     title="Directional ambient noise: travel-time bias in seismic interferometry",
-    sidebar=[controls], main=[pn.bind(view, w_th, w_k, w_eps, w_fc, refresh)],
+    sidebar=[controls],
+    main=[pn.Tabs(("Station pair", pn.bind(view, w_th, w_k, w_eps, w_fc, refresh)),
+                  ("DAS fiber", das_tab), dynamic=False)],
 ).servable()

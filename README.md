@@ -33,7 +33,7 @@ conda activate ambient-noise
 
 No conda? Use a virtual environment instead: `python -m venv .venv`, activate it (`source .venv/bin/activate`, or `.venv\Scripts\activate` on Windows), then `pip install -r requirements.txt`.
 
-**Interactive app.** Run `panel serve app.py --show`. A browser tab opens, and the first solve takes about 15 s. Pick a station spacing and heterogeneity level and press *Run solver*. Then drag the noise-direction, concentration, background, and frequency sliders: these update instantly.
+**Interactive app.** Run `panel serve app.py --show`. The page opens right away and starts the solver, with a progress bar in the sidebar (the terminal also prints `FD solver: NN%`). The default *fast* grid (Δx = 100 m) takes a few seconds; *standard* (Δx = 50 m, the grid the notebooks verify) takes about 15 s on a laptop. Each result is saved to `.cache/`, so a configuration you have already run reloads instantly, even after restarting the app. Once the plots appear, drag the noise-direction, concentration, background, and frequency sliders: these update instantly. Change the grid, spacing, or heterogeneity, then press *Run solver*.
 
 **Notebooks.** Run `jupyter notebook`, then open `verification.ipynb` or `experiments.ipynb` and choose *Run All*. The experiments notebook takes a couple of minutes; the scattering section is the slowest part, because each medium needs new solver runs.
 

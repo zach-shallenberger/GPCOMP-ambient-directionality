@@ -116,7 +116,7 @@ def laplacian4(u, dx, out):
     return out
 
 
-def simulate(model, src_xy, rec_xy, f0, T, t0=None, snapshots=()):
+def simulate(model, src_xy, rec_xy, f0, T, t0=None, snapshots=(), progress=None):
     """
     Solve u_tt + sigma u_t = c^2 lap(u) + w(t) delta(x - x_src) by leapfrog.
 
@@ -125,6 +125,7 @@ def simulate(model, src_xy, rec_xy, f0, T, t0=None, snapshots=()):
     f0, t0   : Ricker peak frequency [Hz] and delay [s] (default 1.5/f0)
     T        : record length [s]
     snapshots: optional step indices at which to save the full wavefield
+    progress : optional callback progress(fraction) called every ~10% of the run
     Returns t (nt,), traces (nt, nrec), dict of snapshots.
     """
     t0 = 1.5 / f0 if t0 is None else t0
@@ -145,6 +146,8 @@ def simulate(model, src_xy, rec_xy, f0, T, t0=None, snapshots=()):
     traces = np.zeros((nt, irz.size))
     snaps = {}
     for it in range(nt):
+        if progress and it % max(nt // 10, 1) == 0:
+            progress(it / nt)
         traces[it] = u[irz, irx]
         if it in snapshots:
             snaps[it] = u.copy()
@@ -216,7 +219,7 @@ class PairExperiment:
     Everything else (source pattern, frequency band, pair azimuth) re-weights them.
     """
 
-    def __init__(self, model, r=3.0, R=RING_R, f0=F0, ring_spacing=0.15):
+    def __init__(self, model, r=3.0, R=RING_R, f0=F0, ring_spacing=0.15, progress=None):
         self.model, self.f0 = model, f0
         self.r = 2 * model.dx * round(r / (2 * model.dx))       # keep A, B on nodes
         self.xA, self.xB = np.array([-self.r / 2, 0.0]), np.array([self.r / 2, 0.0])
@@ -226,8 +229,11 @@ class PairExperiment:
         # record length: farthest ring point to a station + wavelet duration
         T = (R + self.r) / model.c.min() + 6.0 / f0
         rec = np.vstack([self.src_xy, self.xB])                  # last receiver = station B
-        self.t, uA, _ = simulate(model, self.xA, rec, f0, T)
-        _, uB, _ = simulate(model, self.xB, self.src_xy, f0, T)
+        # progress(fraction) callback, if given, spans both runs (0-0.5, 0.5-1)
+        pA = (lambda q: progress(0.5 * q)) if progress else None
+        pB = (lambda q: progress(0.5 + 0.5 * q)) if progress else None
+        self.t, uA, _ = simulate(model, self.xA, rec, f0, T, progress=pA)
+        _, uB, _ = simulate(model, self.xB, self.src_xy, f0, T, progress=pB)
         self.G_AB = uA[:, -1]                                    # direct A -> B (Ricker-filtered)
         uA = uA[:, :-1]
 

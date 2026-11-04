@@ -5,12 +5,14 @@ Run with:   panel serve app.py --show
 All numerics live in simulation.py; this file only wires widgets to plots.
 
 Two kinds of controls:
-  * Medium / geometry (station spacing, heterogeneity): need new FD runs (~15 s),
-    triggered by the "Run solver" button and cached.
+  * Medium / geometry (grid, station spacing, heterogeneity): need two new FD runs,
+    started with the "Run solver" button. Results are cached in memory and on disk
+    (.cache/), so each configuration is only ever solved once.
   * Noise field and frequency band: only re-weight stored FD results, so the plots
     update instantly while dragging the sliders.
 """
-from functools import lru_cache
+import asyncio, pickle, time
+from pathlib import Path
 import numpy as np
 import panel as pn
 from matplotlib.figure import Figure
@@ -18,17 +20,33 @@ import simulation as S
 
 pn.extension(sizing_mode="stretch_width")
 
+CACHE_DIR = Path(__file__).parent / ".cache"
+GRIDS = {"fast (dx = 100 m)": 0.1, "standard (dx = 50 m)": S.DX}
 
-@lru_cache(maxsize=8)
-def experiment(r_km, het_pct):
-    """Two FD impulse runs for a station pair (cached per medium/geometry)."""
-    m = S.Model()
-    if het_pct > 0:
-        m = S.Model(c=S.random_medium(m, rel_std=het_pct / 100, corr_len=0.1, seed=1))
-    return S.PairExperiment(m, r=r_km)
+
+def experiment(dx, r_km, het_pct, progress=None):
+    """Two FD impulse runs for a station pair, cached in memory (shared by all browser
+    sessions) and on disk, so restarting the app does not re-run the solver."""
+    key = f"pair_dx{1000 * dx:.0f}m_r{r_km}km_het{het_pct}"
+    mem = pn.state.cache.setdefault("experiments", {})
+    if key in mem:
+        return mem[key]
+    path = CACHE_DIR / f"{key}.pkl"
+    if path.exists():
+        exp = pickle.loads(path.read_bytes())
+    else:
+        m = S.Model(dx=dx)
+        if het_pct > 0:
+            m = S.Model(dx=dx, c=S.random_medium(m, rel_std=het_pct / 100, corr_len=0.1, seed=1))
+        exp = S.PairExperiment(m, r=r_km, progress=progress)
+        CACHE_DIR.mkdir(exist_ok=True)
+        path.write_bytes(pickle.dumps(exp))
+    mem[key] = exp
+    return exp
 
 
 # ---------------------------------------------------------------- widgets
+w_grid = pn.widgets.Select(name="Grid", options=list(GRIDS), value="fast (dx = 100 m)")
 w_r = pn.widgets.Select(name="Station spacing r (km)", options=[1, 2, 3, 4, 5], value=3)
 w_het = pn.widgets.Select(name="Velocity heterogeneity (std, %)", options=[0, 5, 10], value=0)
 w_run = pn.widgets.Button(name="Run solver", button_type="primary")
@@ -38,18 +56,37 @@ w_k = pn.widgets.FloatSlider(name="Concentration κ (0 = isotropic)", start=0, e
 w_eps = pn.widgets.FloatSlider(name="Isotropic background ε", start=0, end=1, step=0.05, value=0)
 w_fc = pn.widgets.FloatSlider(name="Band centre frequency f_c (Hz)", start=0.8, end=2.8,
                               step=0.1, value=S.F0)
+bar = pn.indicators.Progress(name="solver", value=0, max=100, visible=False)
 status = pn.pane.Markdown("")
-state = {"exp": experiment(w_r.value, w_het.value)}
+refresh = pn.widgets.IntInput(value=0, visible=False)   # bumped when a new solve finishes
+state = {"exp": None}
 
 
-def rerun(_):
-    status.object = "*Running FD solver (2 impulse runs)...*"
-    state["exp"] = experiment(w_r.value, w_het.value)
-    status.object = f"Solver done: r = {state['exp'].r:.0f} km, heterogeneity {w_het.value}%."
-    w_th.param.trigger("value")   # refresh plots
+async def rerun(_=None):
+    """Run (or load) the FD solve in a worker thread so the page stays responsive."""
+    dx, r, het = GRIDS[w_grid.value], w_r.value, w_het.value
+    w_run.disabled, bar.visible, bar.value = True, True, 0
+    status.object = f"*Running FD solver (2 impulse runs, r = {r} km)...*"
+    t0 = time.time()
+
+    def progress(q):                    # called from the worker thread
+        bar.value = int(100 * q)
+        print(f"  FD solver: {100 * q:3.0f}%", flush=True)
+
+    try:
+        state["exp"] = await asyncio.to_thread(experiment, dx, r, het, progress)
+        status.object = (f"Solver ready ({time.time() - t0:.1f} s): r = {state['exp'].r:.0f} km, "
+                         f"heterogeneity {het}%, grid {state['exp'].model.n}².")
+    except Exception as err:            # show the error in the page, not only the terminal
+        status.object = f"**Solver failed:** {err!r}"
+        raise
+    finally:
+        w_run.disabled, bar.visible = False, False
+    refresh.value += 1
 
 
 w_run.on_click(rerun)
+pn.state.onload(rerun)                  # first solve starts once the page has loaded
 
 
 # ---------------------------------------------------------------- plots
@@ -100,8 +137,11 @@ def anisotropy_plot(exp, th, k, eps, fc):
     fig.tight_layout(); return fig
 
 
-def view(th_deg, k, eps, fc):
+def view(th_deg, k, eps, fc, _refresh):
     exp = state["exp"]
+    if exp is None:
+        return pn.pane.Markdown("### Running the solver for the first time...\n"
+                                "The plots appear when it finishes (progress bar on the left).")
     th = np.radians(th_deg)
     C, Cref = exp.correlate(exp.weights(th, k, eps), fc), exp.correlate(exp.weights(), fc)
     m = exp.measure(C, Cref, fc)
@@ -126,14 +166,14 @@ True travel time r/c = {exp.r / exp.model.c0:.2f} s; wavelength {lam:.2f} km; sp
 
 
 controls = pn.Column(
-    "### Medium & stations", w_r, w_het, w_run, status,
+    "### Medium & stations", w_grid, w_r, w_het, w_run, bar, status,
     "### Noise field (instant)", w_th, w_k, w_eps,
     "### Frequency band", w_fc,
     pn.pane.Markdown(f"Basin scale: scalar 2D wave equation, c = {1000 * S.C0:.0f} m/s, FD leapfrog with "
-                     f"4th-order Laplacian (dx = {1000 * S.DX:.0f} m). Noise sources on a "
+                     f"4th-order Laplacian. Noise sources on a "
                      f"{S.RING_R:.0f} km ring. Correlations via reciprocity."),
 )
 pn.template.FastListTemplate(
     title="Directional ambient noise: travel-time bias in seismic interferometry",
-    sidebar=[controls], main=[pn.bind(view, w_th, w_k, w_eps, w_fc)],
+    sidebar=[controls], main=[pn.bind(view, w_th, w_k, w_eps, w_fc, refresh)],
 ).servable()

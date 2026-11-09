@@ -166,7 +166,8 @@ def harmonic(a, b):
 
 
 def simulate_sh(grid, beta, rho, src_xz, f0, T, t0=None, rows=(), points=(), decim=1,
-                snapshots=(), conservative=True, src_row=False, muz=None, progress=None):
+                snapshots=(), conservative=True, src_row=False, muz=None, snap_decim=1, on_snapshot=None,
+                progress=None):
     """
     Leapfrog solution of rho u_tt + rho sigma u_t = div(mu grad u) + rho w(t) delta(x - x_s).
 
@@ -179,7 +180,9 @@ def simulate_sh(grid, beta, rho, src_xz, f0, T, t0=None, rows=(), points=(), dec
     rows       : depths [m] of horizontal lines recorded in full (|x| <= half_width)
     points     : (n, 2) array of (x, z) point receivers
     decim      : keep every decim-th time step in the records
-    snapshots  : times [s] at which to save the wavefield (physical region only)
+    snapshots  : times [s] at which to save the wavefield (physical region only, every
+                 snap_decim-th node, float32); on_snapshot(t, frame) is called with each
+                 one as it is taken (used by the app to show the wave live)
     conservative: False -> naive beta^2 lap(u) operator (for the interface test only)
     muz        : optional (nz-1, nx) mu at the vertical half-points (see layered_grid);
                  default is the harmonic mean of the node values
@@ -207,7 +210,7 @@ def simulate_sh(grid, beta, rho, src_xz, f0, T, t0=None, rows=(), points=(), dec
     keep = np.abs(g.x) <= g.half_width + 1e-9
     pts = np.reshape(np.asarray(points, float), (-1, 2))
     pz, px = g.iz(pts[:, 1]), g.ix(pts[:, 0])
-    snap_steps = {int(round(ts / dt)): ts for ts in snapshots}
+    snap_steps = {int(round(ts / dt)): round(float(ts), 3) for ts in snapshots}
     zkeep = (g.z >= -1e-9) & (g.z <= g.depth + 1e-9)
 
     u_prev, u = np.zeros((g.nz, g.nx)), np.zeros((g.nz, g.nx))
@@ -222,7 +225,10 @@ def simulate_sh(grid, beta, rho, src_xz, f0, T, t0=None, rows=(), points=(), dec
             rec_rows[it // decim] = u[jr][:, keep]
             rec_pts[it // decim] = u[pz, px]
         if it in snap_steps:
-            snaps[snap_steps[it]] = u[zkeep][:, keep].copy()
+            ts = snap_steps[it]
+            snaps[ts] = u[zkeep][:, keep][::snap_decim, ::snap_decim].astype(np.float32)
+            if on_snapshot:
+                on_snapshot(ts, snaps[ts])
         L[:] = 0.0
         if conservative:
             # x fluxes  F_{j+1/2} = mu (u_{j+1} - u_j);  L_j += F_{j+1/2} - F_{j-1/2}
@@ -257,7 +263,8 @@ def simulate_sh(grid, beta, rho, src_xz, f0, T, t0=None, rows=(), points=(), dec
             u_next[:, [0, -1]] = 0.0
         u_prev, u = u, u_next
     return dict(t=dt * decim * np.arange(rec_rows.shape[0]), dt=dt, rows=rec_rows,
-                x=g.x[keep], points=rec_pts, snaps=snaps, z=g.z[zkeep])
+                x=g.x[keep], points=rec_pts, snaps=snaps, z=g.z[zkeep][::snap_decim],
+                x_snap=g.x[keep][::snap_decim])
 
 
 def layered_grid(site, grid):
@@ -376,13 +383,18 @@ class LoveLine:
     and divided by the Ricker spectrum, so they are band-limited Green's functions.
     """
 
-    def __init__(self, site=None, grid=None, f0=8.0, T=3.5, fmax=30.0, progress=None):
+    FRAME_TIMES = np.round(np.arange(0.05, 2.501, 0.05), 3)   # wavefield movie frames [s]
+
+    def __init__(self, site=None, grid=None, f0=8.0, T=3.5, fmax=30.0, progress=None,
+                 on_snapshot=None):
         self.site, self.grid = site or Site(), grid or Grid()
         beta, rho, muz = layered_grid(self.site, self.grid)
         out = simulate_sh(self.grid, beta, rho, (0.0, 0.0), f0, T, rows=SOURCE_DEPTHS, muz=muz,
                           decim=max(1, int(0.002 / (self.grid.cfl * self.grid.dx / beta.max()))),
-                          snapshots=(0.3, 0.6, 0.9), progress=progress)
-        self.t, self.snaps, self.z_snap = out["t"], out["snaps"], out["z"]
+                          snapshots=self.FRAME_TIMES, snap_decim=max(1, round(2.0 / self.grid.dx)),
+                          on_snapshot=on_snapshot, progress=progress)
+        # snaps: {time: wavefield on a ~2 m grid over the physical region}, for animations
+        self.t, self.snaps, self.z_snap, self.x_snap = out["t"], out["snaps"], out["z"], out["x_snap"]
         x, rows = out["x"], out["rows"]
         dt = self.t[1] - self.t[0]
         self.nfft = 2 * len(self.t)                  # zero pad: correlations need 2T of lag

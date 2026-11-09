@@ -6,8 +6,9 @@ All numerics live in love_waves.py; this file only wires widgets to plots.
 
 Two kinds of controls:
   * Site model and grid: need one new FD run (a few seconds on the fast grid, ~30-60 s on
-    the standard grid), started with "Run solver". Results are cached in memory and on
-    disk (.cache/), so each model is only ever solved once.
+    the standard grid), started with "Run solver". The wavefield is drawn live while the
+    solver runs, then replayed as a looping animation (play/pause/scrub with the player).
+    Results are cached in memory and on disk (.cache/), so each model is only solved once.
   * Noise sources, array and picking: only re-weight the stored Green's functions, so the
     plots update instantly.
 """
@@ -25,9 +26,9 @@ GRIDS = {"fast (dx = 2 m, up to 12 Hz)": (2.0, 12.0), "standard (dx = 1 m, up to
 C_TRIAL = np.linspace(100, 1300, 601)
 
 
-def love_line(site, dx, progress=None):
+def love_line(site, dx, progress=None, on_snapshot=None):
     """One FD impulse run for a site, cached in memory (all sessions) and on disk."""
-    key = f"love_dx{dx}_b{site.b1:.0f}-{site.b2:.0f}_H{site.H:.1f}_r{site.r1:.0f}-{site.r2:.0f}"
+    key = f"love_v2_dx{dx}_b{site.b1:.0f}-{site.b2:.0f}_H{site.H:.1f}_r{site.r1:.0f}-{site.r2:.0f}"
     mem = pn.state.cache.setdefault("love", {})
     if key in mem:
         return mem[key]
@@ -35,7 +36,7 @@ def love_line(site, dx, progress=None):
     if path.exists():
         ll = pickle.loads(path.read_bytes())
     else:
-        ll = L.LoveLine(site, L.Grid(dx=dx), progress=progress)
+        ll = L.LoveLine(site, L.Grid(dx=dx), progress=progress, on_snapshot=on_snapshot)
         CACHE_DIR.mkdir(exist_ok=True)
         path.write_bytes(pickle.dumps(ll))
     mem[key] = ll
@@ -64,7 +65,7 @@ w_dch = pn.widgets.FloatSlider(name="Channel spacing (m)", start=1, end=6, step=
 w_band = pn.widgets.RangeSlider(name="Picking band (Hz)", start=2, end=20, step=0.5, value=(4, 12))
 w_track = pn.widgets.Checkbox(name="Track the fundamental (instead of the image peak)", value=False)
 refresh = pn.widgets.IntInput(value=0, visible=False)
-state = {"ll": None}
+state = {"ll": None, "lim": 1.0}
 
 
 def current_site():
@@ -82,12 +83,26 @@ async def rerun(_=None):
         bar.value = int(100 * q)
         print(f"  FD solver: {100 * q:3.0f}%", flush=True)
 
+    grid = L.Grid(dx=dx)
+    player.disabled = True
+    player.pause()
+
+    last = [0.0]
+
+    def live(t, frame):                 # called from the worker thread for every new frame
+        if time.time() - last[0] < 0.4:  # draw at most ~2.5 frames/s so the solver isn't slowed
+            return
+        last[0] = time.time()
+        lim = max(np.percentile(np.abs(frame), 99.5), 1e-30)
+        wave_pane.object = wave_figure(frame, t, site, grid.half_width, grid.depth, lim, live=True)
+
     try:
-        state["ll"] = await asyncio.to_thread(love_line, site, dx, progress)
+        state["ll"] = await asyncio.to_thread(love_line, site, dx, progress, live)
         g = state["ll"].grid
         status.object = f"Solver ready ({time.time() - t0:.1f} s): grid {g.nx} x {g.nz}, dx = {dx} m."
         w_band.end = fmax
         w_band.value = (w_band.value[0], min(w_band.value[1], fmax))
+        start_movie()
     except Exception as err:
         status.object = f"**Solver failed:** {err!r}"
         raise
@@ -100,21 +115,53 @@ w_run.on_click(rerun)
 pn.state.onload(rerun)
 
 
-# ---------------------------------------------------------------- plots
-def section_plot(ll, rx):
-    fig = Figure(figsize=(7.5, 3.4)); ax = fig.subplots()
-    snap = ll.snaps[0.6]; lim = np.percentile(np.abs(snap), 99.5)
-    hw = ll.grid.half_width
-    ax.imshow(snap, extent=[-hw, hw, ll.z_snap[-1], 0], cmap="seismic", vmin=-lim, vmax=lim, aspect="auto")
-    ax.axhline(ll.site.H, color="k", lw=1)
-    ax.plot(rx, np.zeros_like(rx) + 1, "gv", ms=4)
-    ax.set(xlim=(-250, 250), ylim=(100, 0), xlabel="x (m)", ylabel="depth (m)",
-           title="Model and SH wavefield 0.6 s after a surface impulse (green: sensors)")
-    ax.text(-245, ll.site.H / 2, f"soil β₁ = {ll.site.b1:.0f} m/s", va="center", fontsize=8)
-    ax.text(-245, ll.site.H + 8, f"bedrock β₂ = {ll.site.b2:.0f} m/s", va="center", fontsize=8)
+# ---------------------------------------------------------------- wavefield movie
+def wave_figure(frame, t, site, half_width, depth, lim, live=False):
+    """One frame of the SH wavefield over the model cross-section."""
+    fig = Figure(figsize=(11, 3.2)); ax = fig.subplots()
+    ax.imshow(frame, extent=[-half_width, half_width, depth, 0], cmap="seismic", vmin=-lim, vmax=lim,
+              aspect="auto", interpolation="bilinear")
+    ax.axhline(site.H, color="k", lw=1)
+    rx = L.channels(w_nch.value, w_dch.value, -90.0)
+    ax.plot(rx, np.ones_like(rx), "gv", ms=4)
+    ax.plot(0, 1, "k*", ms=10)
+    ax.text(-half_width + 5, site.H / 2, f"soil β₁ = {site.b1:.0f} m/s", va="center", fontsize=8)
+    ax.text(-half_width + 5, site.H + 8, f"bedrock β₂ = {site.b2:.0f} m/s", va="center", fontsize=8)
+    what = "solver running" if live else "replay"
+    ax.set(xlim=(-half_width, half_width), ylim=(min(depth, 120), 0), xlabel="x (m)", ylabel="depth (m)",
+           title=f"SH wavefield from a surface impulse (star), t = {t:.2f} s  [{what}; green: sensors]")
     fig.tight_layout(); return fig
 
 
+def show_frame(i):
+    """Draw stored frame i of the current model (called by the player)."""
+    ll = state["ll"]
+    if ll is None:
+        return
+    t = L.LoveLine.FRAME_TIMES[i]
+    wave_pane.object = wave_figure(ll.snaps[t], t, ll.site, ll.grid.half_width, ll.grid.depth, state["lim"])
+
+
+def start_movie():
+    """After a solve: fix one colour scale for all frames (Love waves, not the source
+    singularity, set it) and loop the animation."""
+    ll = state["ll"]
+    late = [ll.snaps[t] for t in L.LoveLine.FRAME_TIMES if t >= 0.4]
+    state["lim"] = float(np.percentile(np.abs(np.stack(late)), 99.5))
+    player.disabled = False
+    player.value = 0
+    show_frame(0)
+    player.play()
+
+
+wave_pane = pn.pane.Matplotlib(None, tight=True, format="png", dpi=90, height=300, sizing_mode="stretch_width")
+player = pn.widgets.Player(name="time step", start=0, end=len(L.LoveLine.FRAME_TIMES) - 1, value=0,
+                           loop_policy="loop", interval=150, show_loop_controls=False, width=380,
+                           sizing_mode="fixed", disabled=True)
+player.param.watch(lambda e: show_frame(e.new), "value")
+
+
+# ---------------------------------------------------------------- plots
 def gather_plot(ll, U, off):
     fig = Figure(figsize=(5, 3.4)); ax = fig.subplots()
     t, tr = ll.to_time(U, 2.0, ll.f[-1] - 2)
@@ -177,11 +224,10 @@ fundamental: mean {100 * np.mean(cp / exact - 1):+.1f} %, max {100 * np.max(np.a
 Array aperture {off[-1]:.0f} m; mode-1 cutoff {site.cutoff(1):.1f} Hz.
 """)
     return pn.Column(
-        pn.Row(pn.pane.Matplotlib(section_plot(ll, rx), tight=True, format="svg"),
-               pn.pane.Matplotlib(gather_plot(ll, U, off), tight=True, format="svg", width=480, sizing_mode="fixed")),
-        pn.Row(pn.pane.Matplotlib(dispersion_plot(ll, img, fp, cp, site), tight=True, format="svg"),
-               pn.pane.Matplotlib(profile_plot(site, p), tight=True, format="svg", width=360, sizing_mode="fixed")),
-        table)
+        pn.Row(pn.pane.Matplotlib(gather_plot(ll, U, off), tight=True, format="svg", width=420, sizing_mode="fixed"),
+               pn.pane.Matplotlib(dispersion_plot(ll, img, fp, cp, site), tight=True, format="svg")),
+        pn.Row(pn.pane.Matplotlib(profile_plot(site, p), tight=True, format="svg", width=360, sizing_mode="fixed"),
+               table))
 
 
 controls = pn.Column(
@@ -195,5 +241,6 @@ controls = pn.Column(
 pn.template.FastListTemplate(
     title="Passive Love-wave site characterisation (Vs30 from ambient noise)",
     sidebar=[controls],
-    main=[pn.bind(view, w_layout, w_theta, w_depth, w_win, w_nch, w_dch, w_band, w_track, refresh)],
+    main=[pn.Column(wave_pane, player),
+          pn.bind(view, w_layout, w_theta, w_depth, w_win, w_nch, w_dch, w_band, w_track, refresh)],
 ).servable()

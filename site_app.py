@@ -56,6 +56,7 @@ status = pn.pane.Markdown("")
 w_layout = pn.widgets.Select(name="Noise sources", value="both", options={
     "both ends (in-line)": "both", "left end only": "left", "right end only": "right",
     "everywhere along the line": "everywhere", "off-line, at angle θ": "offline"})
+w_gap = pn.widgets.IntSlider(name="Gap to nearest noise source (m)", start=0, end=150, step=10, value=100)
 w_theta = pn.widgets.IntSlider(name="Off-line angle θ (deg)", start=0, end=60, step=5, value=20)
 w_depth = pn.widgets.Select(name="Source depth (m)", options=list(L.SOURCE_DEPTHS), value=0.0)
 w_win = pn.widgets.Select(name="Noise record", value=0,
@@ -116,20 +117,30 @@ pn.state.onload(rerun)
 
 
 # ---------------------------------------------------------------- wavefield movie
+ANIM_GAP = 250.0   # distance [m] from the first sensor to the source shown in the animation
+
+
 def wave_figure(frame, t, site, half_width, depth, lim, live=False):
-    """One frame of the SH wavefield over the model cross-section."""
-    fig = Figure(figsize=(11, 3.2)); ax = fig.subplots()
-    ax.imshow(frame, extent=[-half_width, half_width, depth, 0], cmap="seismic", vmin=-lim, vmax=lim,
-              aspect="auto", interpolation="bilinear")
-    ax.axhline(site.H, color="k", lw=1)
+    """One frame of the SH wavefield over the model cross-section.
+
+    The solver fires its impulse at x = 0, but the model is laterally uniform, so the field
+    of a source anywhere else is the same field shifted sideways. For display we place the
+    source ANIM_GAP m before the first sensor, so the animation shows a distant noise
+    source's waves travelling in and sweeping across the array."""
     rx = L.channels(w_nch.value, w_dch.value, -90.0)
+    xs = rx[0] - ANIM_GAP
+    fig = Figure(figsize=(11, 3.2)); ax = fig.subplots()
+    ax.imshow(frame, extent=[xs - half_width, xs + half_width, depth, 0], cmap="seismic", vmin=-lim,
+              vmax=lim, aspect="auto", interpolation="bilinear")
+    ax.axhline(site.H, color="k", lw=1)
     ax.plot(rx, np.ones_like(rx), "gv", ms=4)
-    ax.plot(0, 1, "k*", ms=10)
-    ax.text(-half_width + 5, site.H / 2, f"soil β₁ = {site.b1:.0f} m/s", va="center", fontsize=8)
-    ax.text(-half_width + 5, site.H + 8, f"bedrock β₂ = {site.b2:.0f} m/s", va="center", fontsize=8)
+    ax.plot(xs, 1, "k*", ms=12, clip_on=False)
+    x0 = xs - 40
+    ax.text(xs + 12, site.H / 2, f"soil β₁ = {site.b1:.0f} m/s", va="center", fontsize=8)
+    ax.text(xs + 12, site.H + 8, f"bedrock β₂ = {site.b2:.0f} m/s", va="center", fontsize=8)
     what = "solver running" if live else "replay"
-    ax.set(xlim=(-half_width, half_width), ylim=(min(depth, 120), 0), xlabel="x (m)", ylabel="depth (m)",
-           title=f"SH wavefield from a surface impulse (star), t = {t:.2f} s  [{what}; green: sensors]")
+    ax.set(xlim=(x0, xs + half_width), ylim=(min(depth, 120), 0), xlabel="x (m)", ylabel="depth (m)",
+           title=f"Waves from a noise source (star) {ANIM_GAP:.0f} m from the array (green), t = {t:.2f} s  [{what}]")
     fig.tight_layout(); return fig
 
 
@@ -203,6 +214,7 @@ def view(*_):
     rx = L.channels(w_nch.value, w_dch.value, -90.0)
     off = rx - rx[0]
     src = L.line_sources(w_layout.value, rec_x=rx, theta_deg=w_theta.value, reach=120.0,
+                         gap=w_gap.value, standoff=max(w_gap.value, 10.0),
                          depth_index=L.SOURCE_DEPTHS.index(w_depth.value))
     try:
         U = (ll.noise_gather(rx, src) if w_win.value == 0 else ll.random_gather(rx, src, w_win.value))
@@ -232,7 +244,7 @@ Array aperture {off[-1]:.0f} m; mode-1 cutoff {site.cutoff(1):.1f} Hz.
 
 controls = pn.Column(
     "### Site model (needs a solver run)", w_grid, w_b1, w_b2, w_H, w_rho, w_run, bar, status,
-    "### Noise (instant)", w_layout, w_theta, w_depth, w_win,
+    "### Noise (instant)", w_layout, w_gap, w_theta, w_depth, w_win,
     "### Array and picking (instant)", w_nch, w_dch, w_band, w_track,
     pn.pane.Markdown("SH waves in a vertical plane: ρu_tt = ∇·(μ∇u), FD leapfrog with a conservative "
                      "variable-μ operator and a free surface. One impulse run gives every noise "
@@ -242,5 +254,5 @@ pn.template.FastListTemplate(
     title="Passive Love-wave site characterisation (Vs30 from ambient noise)",
     sidebar=[controls],
     main=[pn.Column(wave_pane, player),
-          pn.bind(view, w_layout, w_theta, w_depth, w_win, w_nch, w_dch, w_band, w_track, refresh)],
+          pn.bind(view, w_layout, w_gap, w_theta, w_depth, w_win, w_nch, w_dch, w_band, w_track, refresh)],
 ).servable()

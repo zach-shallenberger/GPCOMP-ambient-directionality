@@ -486,19 +486,19 @@ class LoveLine:
 
 
 def line_sources(kind="both", reach=150.0, spacing=2.0, depth_index=0, theta_deg=0.0,
-                 rec_x=None, standoff=60.0):
+                 rec_x=None, standoff=60.0, gap=0.0):
     """Noise source layouts (all weights equal).
 
     kind = "left" / "right" / "both": in-line sources along the line beyond the array ends,
-           out to `reach` m.
+           starting `gap` m past each end and extending `reach` m further.
            "everywhere": in-line sources along the whole line, including under the array.
            "offline": far sources whose waves cross the line at +-theta_deg, from both
            ends (standoff is the in-plane distance to the first channel).
     """
     rec_x = np.asarray(rec_x)
     x0, x1 = rec_x.min(), rec_x.max()
-    left = np.arange(x0 - reach, x0 - 0.5 * spacing, spacing)
-    right = np.arange(x1 + spacing, x1 + reach + 1e-9, spacing)
+    left = np.arange(x0 - gap - reach, x0 - gap - 0.5 * spacing, spacing)
+    right = np.arange(x1 + gap + spacing, x1 + gap + reach + 1e-9, spacing)
     if kind == "offline":
         th = np.radians(theta_deg)
         p = standoff + np.arange(0, reach, spacing)

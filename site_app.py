@@ -7,16 +7,18 @@ All numerics live in love_waves.py; this file only wires widgets to plots.
 Two kinds of controls:
   * Site model and grid: need one new FD run (a few seconds on the fast grid, ~30-60 s on
     the standard grid), started with "Run solver". The wavefield is drawn live while the
-    solver runs, then replayed as a looping animation (play/pause/scrub with the player).
+    solver runs, then rendered once into an animated GIF that loops in the browser.
     Results are cached in memory and on disk (.cache/), so each model is only solved once.
   * Noise sources, array and picking: only re-weight the stored Green's functions, so the
     plots update instantly.
 """
-import asyncio, pickle, time
+import asyncio, base64, io, pickle, time
 from pathlib import Path
 import numpy as np
 import panel as pn
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from PIL import Image
 import love_waves as L
 
 pn.extension(sizing_mode="stretch_width")
@@ -85,8 +87,6 @@ async def rerun(_=None):
         print(f"  FD solver: {100 * q:3.0f}%", flush=True)
 
     grid = L.Grid(dx=dx)
-    player.disabled = True
-    player.pause()
 
     last = [0.0]
 
@@ -95,7 +95,7 @@ async def rerun(_=None):
             return
         last[0] = time.time()
         lim = max(np.percentile(np.abs(frame), 99.5), 1e-30)
-        wave_pane.object = wave_figure(frame, t, site, grid.half_width, grid.depth, lim, live=True)
+        wave_pane.object = png_html(wave_figure(frame, t, site, grid.half_width, grid.depth, lim, live=True))
 
     try:
         state["ll"] = await asyncio.to_thread(love_line, site, dx, progress, live)
@@ -103,13 +103,13 @@ async def rerun(_=None):
         status.object = f"Solver ready ({time.time() - t0:.1f} s): grid {g.nx} x {g.nz}, dx = {dx} m."
         w_band.end = fmax
         w_band.value = (w_band.value[0], min(w_band.value[1], fmax))
-        start_movie()
     except Exception as err:
         status.object = f"**Solver failed:** {err!r}"
         raise
     finally:
         w_run.disabled, bar.visible = False, False
     refresh.value += 1
+    await update_movie()
 
 
 w_run.on_click(rerun)
@@ -129,7 +129,7 @@ def wave_figure(frame, t, site, half_width, depth, lim, live=False):
     source's waves travelling in and sweeping across the array."""
     rx = L.channels(w_nch.value, w_dch.value, -90.0)
     xs = rx[0] - ANIM_GAP
-    fig = Figure(figsize=(11, 3.2)); ax = fig.subplots()
+    fig = Figure(figsize=(12, 3.4)); ax = fig.subplots()
     ax.imshow(frame, extent=[xs - half_width, xs + half_width, depth, 0], cmap="seismic", vmin=-lim,
               vmax=lim, aspect="auto", interpolation="bilinear")
     ax.axhline(site.H, color="k", lw=1)
@@ -140,36 +140,51 @@ def wave_figure(frame, t, site, half_width, depth, lim, live=False):
     ax.text(xs + 12, site.H + 8, f"bedrock β₂ = {site.b2:.0f} m/s", va="center", fontsize=8)
     what = "solver running" if live else "replay"
     ax.set(xlim=(x0, xs + half_width), ylim=(min(depth, 120), 0), xlabel="x (m)", ylabel="depth (m)",
-           title=f"Waves from a noise source (star) {ANIM_GAP:.0f} m from the array (green), t = {t:.2f} s  [{what}]")
+           title=f"Waves from a source (star) {ANIM_GAP:.0f} m from the array (green) [{what}], t = {t:.2f} s")
     fig.tight_layout(); return fig
 
 
-def show_frame(i):
-    """Draw stored frame i of the current model (called by the player)."""
-    ll = state["ll"]
-    if ll is None:
-        return
-    t = L.LoveLine.FRAME_TIMES[i]
-    wave_pane.object = wave_figure(ll.snaps[t], t, ll.site, ll.grid.half_width, ll.grid.depth, state["lim"])
+def png_html(fig):
+    """Matplotlib figure -> <img> tag (PNG inline)."""
+    buf = io.BytesIO(); fig.savefig(buf, format="png", dpi=80)
+    return f'<img src="data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}" style="width:100%">'
 
 
-def start_movie():
-    """After a solve: fix one colour scale for all frames (Love waves, not the source
-    singularity, set it) and loop the animation."""
-    ll = state["ll"]
+def make_gif(ll):
+    """Render every stored frame into ONE animated GIF that loops in the browser by itself
+    (no server round trip per frame, so it plays smoothly on any machine). One figure is
+    drawn once and only its image data and title change between frames."""
     late = [ll.snaps[t] for t in L.LoveLine.FRAME_TIMES if t >= 0.4]
-    state["lim"] = float(np.percentile(np.abs(np.stack(late)), 99.5))
-    player.disabled = False
-    player.value = 0
-    show_frame(0)
-    player.play()
+    lim = float(np.percentile(np.abs(np.stack(late)), 99.5))   # Love waves, not the source spike
+    t0 = L.LoveLine.FRAME_TIMES[0]
+    fig = wave_figure(ll.snaps[t0], t0, ll.site, ll.grid.half_width, ll.grid.depth, lim)
+    ax = fig.axes[0]; im = ax.images[0]
+    canvas = FigureCanvasAgg(fig)
+    frames = []
+    for t in L.LoveLine.FRAME_TIMES:
+        im.set_data(ll.snaps[t])
+        ax.set_title(ax.get_title().split(", t =")[0] + f", t = {t:.2f} s")
+        canvas.draw()
+        rgb = Image.fromarray(np.asarray(canvas.buffer_rgba())[:, :, :3])
+        frames.append(rgb.quantize(colors=64, method=Image.Quantize.MEDIANCUT))
+    buf = io.BytesIO()
+    frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:], duration=120, loop=0)
+    return f'<img src="data:image/gif;base64,{base64.b64encode(buf.getvalue()).decode()}" style="width:100%">'
 
 
-wave_pane = pn.pane.Matplotlib(None, tight=True, format="png", dpi=90, height=300, sizing_mode="stretch_width")
-player = pn.widgets.Player(name="time step", start=0, end=len(L.LoveLine.FRAME_TIMES) - 1, value=0,
-                           loop_policy="loop", interval=150, show_loop_controls=False, width=380,
-                           sizing_mode="fixed", disabled=True)
-player.param.watch(lambda e: show_frame(e.new), "value")
+async def update_movie(*_):
+    """(Re)build the looping animation for the current model and array layout."""
+    if state["ll"] is None:
+        return
+    movie_note.object = "*Rendering the animation...*"
+    wave_pane.object = await asyncio.to_thread(make_gif, state["ll"])
+    movie_note.object = "Source (star) 250 m from the array; loops in the browser."
+
+
+wave_pane = pn.pane.HTML("", height=290, sizing_mode="stretch_width")
+movie_note = pn.pane.Markdown("")
+w_nch.param.watch(update_movie, "value")      # sensors are drawn in the animation
+w_dch.param.watch(update_movie, "value")
 
 
 # ---------------------------------------------------------------- plots
@@ -253,6 +268,6 @@ controls = pn.Column(
 pn.template.FastListTemplate(
     title="Passive Love-wave site characterisation (Vs30 from ambient noise)",
     sidebar=[controls],
-    main=[pn.Column(wave_pane, player),
+    main=[pn.Column(wave_pane, movie_note),
           pn.bind(view, w_layout, w_gap, w_theta, w_depth, w_win, w_nch, w_dch, w_band, w_track, refresh)],
 ).servable()

@@ -23,6 +23,8 @@ Because the site is laterally uniform, **one** impulse run gives the Green's fun
 | `site_app.py` | Panel UI for the site project. It only wires widgets to `love_waves.py`. |
 | `site_verification.ipynb` | Tests against analytic solutions: whole-space Green's function (order 2.0 in Δx and Δt), free surface vs image source (order 2.0), interface reflection coefficient (conservative operator → −0.577 exact; the naive $\beta^2\nabla^2u$ operator gives +0.52), dispersion-relation residual and cutoffs, full chain FD → picks vs exact roots (−0.25% at Δx = 1 m, converging as Δx²), side-sponge reflections (0.6%). |
 | `site_characterization.ipynb` | **Main results** (see below). |
+| `fwi.py` | Bayesian full-waveform inversion of the noise correlograms for a 7-layer Vs(z): face-based μ parametrisation, SH propagator with forward and discrete adjoint, variable projection of the source spectrum, adjoint-state gradient, multiscale L-BFGS, approximation-error (modelling-error) variance and the Laplace posterior. |
+| `fwi_inversion.ipynb` | The FWI results: adjoint gradient vs finite differences (agree to 1e-7), data fit, posterior profile, layer correlations and the Vs30 posterior. Loads `results/fwi_results.npz` by default; set `RUN_FULL = True` to rerun (~45 min). |
 | `simulation.py`, `app.py`, other notebooks | The earlier DAS directional-noise study (below). `love_waves.py` reuses its Ricker wavelet and analytic 2D Green's function. |
 
 ## Main findings (site project)
@@ -32,6 +34,13 @@ Default site: 15 m of soil at 250 m/s over bedrock at 800 m/s, so Vs30 = 381 m/s
 - **Aperture.** Picks are within 1% only for $\lambda \lesssim L/3$. The errors are 10–20% at $\lambda \approx L$. Short lines lose the low frequencies, which are what sense the bedrock. Even the 188 m line inverts β₂ as about 650 m/s instead of 800, although Vs30 is still within 3%.
 - **Noise direction.** One-sided noise along the line is harmless once the causal and acausal branches are folded. **Off-line noise** biases phase velocity fast by exactly $1/\cos\theta$, with a low misfit, so the error is invisible. At 40° Vs30 comes out 12% high.
 - **Mode mispicks.** At this strong-contrast site, surface sources put more energy into mode 1 than into the fundamental above 12.6 Hz. A peak picker jumps modes, and the inversion then misclassifies the site as **D**. Ridge tracking gives Vs30 within 3% (class C), and the inversion misfit (88 vs 1.5 m/s) flags the bad case.
+
+### Bayesian FWI (fwi_inversion.ipynb)
+The wave equation is the forward map of the likelihood. FWI finds the MAP model, and a Gauss–Newton (Laplace) approximation gives the posterior. Data come from the 1 m grid and the inversion runs on a 2 m grid, so there is no inverse crime.
+- **The gradient is right.** The adjoint-state gradient matches finite differences to 1.4e-7 for every layer, at about 10 s per objective plus gradient.
+- **Vs30 and the top 15 m are recovered.** MAP Vs30 is 381 m/s (true 381), and the posterior is 375 ± 8 m/s with P(class C) = 0.94. The four soil layers are all within 0.3σ of 250 m/s.
+- **Modelling error matters as much as noise.** With noise variance alone, the true model fits the data worse than the MAP model (χ²/N 1.84 vs 1.0). The fix was a domain matched to the data grid plus an approximation-error variance estimated at the stage-1 MAP. The true model then fits at χ²/N 0.91.
+- **Limit: below 15 m the error bars are too small.** The MAP smears the jump to 800 m/s over 15–30 m, and the half-space is 4% slow with a σ of 0.3%. The modelling error is systematic but was added as diagonal variance, so the posterior is over-confident there.
 
 ## Running it yourself
 
@@ -133,6 +142,10 @@ This project was developed with Claude (Anthropic) used as an AI coding agent th
 - Louie, J. N. (2001). Faster, better: shear-wave velocity to 100 meters depth from refraction microtremor arrays. *BSSA* 91(2), 347–364.
 - Virieux, J. (1984). SH-wave propagation in heterogeneous media: velocity-stress finite-difference method. *Geophysics* 49(11), 1933–1942.
 - Course notebooks GPGN 436/536 (Dr. Ge Jin, Dr. Jeff Shragge), especially 06_Hyperbolic_PDEs (FD wave solver) and 09_Regression (least-squares fit).
+- Tarantola, A. (2005). *Inverse Problem Theory and Methods for Model Parameter Estimation*. SIAM (Bayesian inversion, MAP and Laplace posteriors).
+- Plessix, R.-E. (2006). A review of the adjoint-state method for computing the gradient of a functional with geophysical applications. *GJI* 167, 495–503.
+- Kaipio, J., & Somersalo, E. (2007). Statistical inverse problems: discretization, model reduction and inverse crimes. *J. Comput. Appl. Math.* 198, 493–504.
+- Golub, G., & Pereyra, V. (2003). Separable nonlinear least squares: the variable projection method and its applications. *Inverse Problems* 19, R1–R26.
 - Snieder, R. (2004). Extracting the Green's function from the correlation of coda waves: a derivation based on stationary phase. *Phys. Rev. E* 69, 046610.
 - Wapenaar, K. (2004). Retrieving the elastodynamic Green's function of an arbitrary inhomogeneous medium by cross correlation. *PRL* 93, 254301.
 - Weaver, R., Froment, B., & Campillo, M. (2009). On the correlation of non-isotropically distributed ballistic scalar diffuse waves. *JASA* 126, 1817–1826.

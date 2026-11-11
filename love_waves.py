@@ -276,6 +276,8 @@ def layered_grid(site, grid):
     [z_i - h/2, z_i + h/2] (mass). Simply sampling beta(z) at nodes would move the
     effective interface by up to h/2: an O(h) error in every dispersion curve.
     """
+    if hasattr(site, "grid_arrays"):                 # multi-layer models (fwi.LayeredSite)
+        return site.grid_arrays(grid)
     z, h = np.maximum(grid.z, 0.0), grid.dx
     mu1, mu2 = site.r1 * site.b1**2, site.r2 * site.b2**2
     frac = lambda a, b: np.clip((site.H - a) / (b - a), 0, 1)     # layer fraction of [a, b]

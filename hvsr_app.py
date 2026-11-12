@@ -8,7 +8,8 @@ All numerics live in hvsr.py; this file only wires widgets to plots.
     and one bare-rock reference run with the same noise (about 15 s on the default grid).
     The wavefield is drawn live while the solver runs, then replayed as a looping GIF.
     Results are cached in memory and on disk (.cache/).
-  * Receiver and smoothing controls only re-process the stored records (instant).
+  * The station slider (which H/V curve and amplification prediction to show) and the
+    smoothing control only re-process the stored records (instant).
 """
 import asyncio, base64, io, pickle, time
 from pathlib import Path
@@ -18,6 +19,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from PIL import Image
 import hvsr as H
+import love_waves as L
 
 pn.extension(sizing_mode="stretch_width")
 
@@ -68,7 +70,6 @@ status = pn.pane.Markdown("")
 contrast_note = pn.pane.Markdown("")
 
 w_ko = pn.widgets.IntSlider(name="Konno-Ohmachi smoothing b", start=10, end=80, step=5, value=25)
-w_x = pn.widgets.DiscreteSlider(name="Receiver for the ratio curve (x, m)", options=[float(x) for x in REC_X], value=0.0)
 refresh = pn.widgets.IntInput(value=0, visible=False)
 state = {"run": None}
 
@@ -178,14 +179,23 @@ pn.state.onload(rerun)
 
 
 # ---------------------------------------------------------------- analysis plots
-def view(b, xsel, *_):
+def ratios(b):
+    """Spectral ratios and f0 picks for the current run, cached per smoothing setting."""
+    run = state["run"]
+    key = (id(run), b)
+    if state.get("ratio_key") != key:
+        f, R = H.spectral_ratio(run["site"], run["ref"], b=b)
+        state["ratio"], state["ratio_key"] = (f, R) + H.pick_f0(f, R), key
+    return state["ratio"]
+
+
+def overview(b, station, *_):
+    j = station - 1
     run = state["run"]
     if run is None:
         return pn.pane.Markdown("### Running the solver for the first time...\nThe plots appear when it finishes.")
-    m, s, r = run["model"], run["site"], run["ref"]
-    f, R = H.spectral_ratio(s, r, b=b)
-    f0, A0 = H.pick_f0(f, R)
-    x = s["rec_x"]
+    m, x = run["model"], run["site"]["rec_x"]
+    f, R, f0, A0 = ratios(b)
     xx = np.linspace(x[0], x[-1], 300)
     inband = (m.f0_1d(x) > 0.8) & (m.f0_1d(x) < 8.0)
 
@@ -195,8 +205,9 @@ def view(b, xsel, *_):
                        vmax=float(np.percentile(R[sel], 99)))
     ax.plot(xx, m.f0_1d(xx), "w--", lw=1.5, label="1D: Vs₁ / 4H(x)")
     ax.plot(x, f0, "o", mfc="r", mec="w", ms=5, label="picked f₀")
+    ax.axvline(x[j], color="w", lw=1, alpha=0.8)
     ax.set(yscale="log", ylim=(0.6, 9), xlabel="receiver x (m)", ylabel="frequency (Hz)",
-           title="Site / rock spectral ratio along the line")
+           title="H/V proxy (site / rock spectral ratio) along the line")
     ax.legend(fontsize=8, loc="upper right"); fig1.colorbar(pc, ax=ax, label="ratio")
     fig1.tight_layout()
 
@@ -206,44 +217,88 @@ def view(b, xsel, *_):
     ax[0].set(ylabel="f₀ (Hz)", yscale="log", title="f₀ and the thickness it implies"); ax[0].legend(fontsize=8)
     ax[1].plot(xx, m.thickness(xx), "k", label="true H(x)")
     ax[1].plot(x[inband], m.vs1 / (4 * f0[inband]), "o", color="C3", ms=4, label="Vs₁ / 4f₀")
+    for a in ax:
+        a.axvline(x[j], color="0.5", lw=1, ls=":")
     ax[1].set(xlabel="receiver x (m)", ylabel="H (m)"); ax[1].invert_yaxis(); ax[1].legend(fontsize=8)
     fig2.tight_layout()
+    return pn.Row(pn.pane.Matplotlib(fig1, tight=True, format="svg"),
+                  pn.pane.Matplotlib(fig2, tight=True, format="svg"))
 
-    j = int(np.argmin(np.abs(x - xsel)))
+
+def tile(name, value, unit, note, color):
+    return pn.pane.HTML(
+        f"""<div style="border:1px solid {color};border-left:6px solid {color};border-radius:6px;padding:8px 12px;
+        height:92px;box-sizing:border-box">
+        <div style="font-size:12px;opacity:0.75">{name}</div>
+        <div style="font-size:26px;font-weight:600;line-height:1.2">{value}<span style="font-size:14px;font-weight:400"> {unit}</span></div>
+        <div style="font-size:12px;opacity:0.75">{note}</div></div>""", width=250, sizing_mode="fixed")
+
+
+def station_view(b, station, *_):
+    j = station - 1
+    run = state["run"]
+    if run is None:
+        return pn.pane.Markdown("")
+    m, x = run["model"], run["site"]["rec_x"]
+    f, R, f0, A0 = ratios(b)
+    sel = (f >= 0.6) & (f <= 9)
     Hj = float(m.thickness(x[j]))
-    fig3 = Figure(figsize=(5.2, 3.6)); ax = fig3.subplots()
-    ff = np.linspace(0.3, 9, 1500)
     mj = H.Model(**{**m.__dict__, "h0": Hj, "dip": 0.0})
-    ax.plot(f[sel], R[sel, j], "C0", lw=2, label="FD noise ratio")
-    ax.plot(ff, mj.transfer_1d(ff), "k--", lw=1, label=f"1D transfer function (H = {Hj:.1f} m)")
+    ff = np.linspace(0.3, 9, 3000)
+    tf = mj.transfer_1d(ff)
+    lo = ff < 1.5 * mj.f0_1d(0)                      # around the fundamental
+    A_true, f_true = float(tf[lo].max()), float(ff[lo][np.argmax(tf[lo])])
+
+    fig3 = Figure(figsize=(6.4, 3.8)); ax = fig3.subplots()
+    ax.plot(f[sel], R[sel, j], "C0", lw=2, label="H/V proxy from the noise")
+    ax.plot(ff, tf, "k--", lw=1, label=f"true 1D amplification (H = {Hj:.1f} m)")
     ax.axvline(f0[j], color="C3", lw=1, label=f"picked f₀ = {f0[j]:.2f} Hz")
-    ax.set(xscale="log", xlim=(0.6, 9), xlabel="frequency (Hz)", ylabel="amplification",
-           title=f"Receiver at x = {x[j]:.0f} m")
+    ax.plot(f0[j], A0[j], "o", color="C3")
+    ax.set(xscale="log", xlim=(0.6, 9), ylim=(0, max(1.15 * R[sel, j].max(), 1.1 * A_true)),
+           xlabel="frequency (Hz)", ylabel="amplification", title=f"Station {j + 1}, x = {x[j]:.0f} m")
     ax.legend(fontsize=8); fig3.tight_layout()
 
-    err = 100 * (f0[inband] / m.f0_1d(x[inband]) - 1)
-    table = pn.pane.Markdown(f"""
-| | value |
-|---|---|
-| impedance contrast | {m.contrast:.1f} (1D peak amplification ≈ contrast, less with damping) |
-| H(x) along the line | {m.thickness(x).min():.1f} to {m.thickness(x).max():.1f} m |
-| f₀ picks vs Vs₁/4H | mean {np.mean(err):+.1f} %, max {np.max(np.abs(err)):.1f} % (over {inband.sum()} receivers with 1D f₀ in 0.8–8 Hz) |
-| peak ratio, mean | {np.mean(A0):.1f} |
+    # ---- prediction from H/V alone (what a field survey would know: f0, peak, and Vs1)
+    H_pred = m.vs1 / (4 * f0[j])
+    T0 = 1 / f0[j]
+    floors = max(1, int(round(10 * T0)))            # rule of thumb: building period ~ 0.1 s per storey
+    v_pred = L.vs30(m.vs1, H_pred, m.vs2)
+    v_true = L.vs30(m.vs1, Hj, m.vs2)
+    risk = "high" if A0[j] >= 4 else "moderate" if A0[j] >= 2 else "low"
+    color = {"high": "#d62728", "moderate": "#ff7f0e", "low": "#2ca02c"}[risk]
+    tiles = pn.FlexBox(
+        tile("Resonance frequency f₀", f"{f0[j]:.2f}", "Hz", f"true 1D {f_true:.2f} Hz", "#1f77b4"),
+        tile("Predicted peak amplification", f"×{A0[j]:.1f}", "", f"true 1D ×{A_true:.1f}; {risk} amplification", color),
+        tile("Depth to rock, Vs₁/4f₀", f"{H_pred:.0f}", "m", f"true {Hj:.1f} m ({100 * (H_pred / Hj - 1):+.0f} %)", "#9467bd"),
+        tile("Buildings at risk of resonance", f"~{floors}", "storeys", f"natural period ≈ T₀ = {T0:.2f} s", color),
+        tile("Vs30 from H/V depth", f"{v_pred:.0f}", "m/s", f"class {L.site_class(v_pred)[0]}; true {v_true:.0f} m/s, class {L.site_class(v_true)[0]}", "#8c564b"),
+        flex_wrap="wrap", gap="8px", sizing_mode="stretch_width")
+    note = pn.pane.Markdown(
+        "How the prediction works: f₀ and the peak height come straight from the H/V curve; the depth uses "
+        "f₀ = Vs₁/4H with the known soft-layer speed; the building rule of thumb is a natural period of "
+        "about 0.1 s per storey, so buildings with T ≈ T₀ shake in resonance with the ground. The *true* "
+        "values use the real local thickness in the analytic 1D model. In field HVSR the peak height is "
+        "only a rough (often low) estimate of the amplification; here the proxy is a site/rock ratio, so the "
+        "SH simplification makes it a direct one.", styles={"font-size": "12px"})
+    card = pn.Card(tiles, note, title=f"Site amplification predicted from H/V at station {j + 1}",
+                   collapsible=False, sizing_mode="stretch_width")
+    return pn.Row(pn.pane.Matplotlib(fig3, tight=True, format="svg", width=520, sizing_mode="fixed"), card)
 
-**Simplification:** this is an SH (antiplane) model, so it has only a horizontal component. We show the
-site-to-rock spectral ratio (surface over soft layer ÷ surface of bare rock, same noise). Field HVSR divides
-by the vertical component instead; both peak near the same f₀ for a strong impedance contrast.
-""")
-    return pn.Column(
-        pn.Row(pn.pane.Matplotlib(fig1, tight=True, format="svg"),
-               pn.pane.Matplotlib(fig2, tight=True, format="svg")),
-        pn.Row(pn.pane.Matplotlib(fig3, tight=True, format="svg"), table))
+
+w_station = pn.widgets.IntSlider(
+    name=f"Station whose H/V curve is shown (1 = x {REC_X[0]:.0f} m ... {len(REC_X)} = x +{REC_X[-1]:.0f} m, every {REC_X[1] - REC_X[0]:.0f} m)",
+    start=1, end=len(REC_X), value=len(REC_X) // 2 + 1, sizing_mode="stretch_width")
+summary = pn.pane.Markdown(
+    "**Simplification:** this is an SH (antiplane) model with only a horizontal component, so the "
+    "'H/V' shown is the site-to-rock spectral ratio (surface over soft layer ÷ surface of bare rock, "
+    "same noise). Field HVSR divides by the vertical component instead; both peak near the same f₀ "
+    "for a strong impedance contrast.", styles={"font-size": "12px"})
 
 
 controls = pn.Column(
     "### Model (needs a solver run)", w_grid, w_vs1, w_vs2, w_rho, w_h0, w_dip, w_q, contrast_note,
     "### Noise", w_surf, w_T, w_run, bar, status,
-    "### Analysis (instant)", w_x, w_ko,
+    "### Analysis (instant)", w_ko,
     pn.pane.Markdown("2D depth slice, SH wave equation ρu_tt = ∇·(μ∇u) with a free surface, solved by "
                      "FD leapfrog with a conservative variable-μ operator. 60 noise sources in the rock fire "
                      "band-limited random noise simultaneously, so waves arrive from all directions."),
@@ -251,5 +306,8 @@ controls = pn.Column(
 pn.template.FastListTemplate(
     title="HVSR-style site response of a dipping soft layer",
     sidebar=[controls],
-    main=[pn.Column(wave_pane, movie_note), pn.bind(view, w_ko, w_x, refresh)],
+    main=[pn.Column(wave_pane, movie_note),
+          pn.bind(overview, w_ko, w_station, refresh),
+          pn.Column("### H/V curve at one station (pick it after the run)", w_station,
+                    pn.bind(station_view, w_ko, w_station, refresh), summary)],
 ).servable()

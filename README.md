@@ -1,4 +1,32 @@
-# Passive Love-wave site characterisation from ambient noise
+# HVSR-style site response of a dipping soft layer from ambient noise
+
+**Main project.** A 2D depth slice (x–z) with a soft layer over rock. The user sets the interface **dip** and the **property contrast** (Vs and density, so the impedance contrast). 60 random noise sources in the rock fire band-limited noise at the same time, so waves reach the surface from all directions. The SH wave equation
+
+$$\rho\,u_{tt} + \rho\,\sigma\,u_t = \partial_x(\mu\,\partial_x u) + \partial_z(\mu\,\partial_z u) + \rho f,\qquad \mu = \rho V_s^2,\qquad \mu\,\partial_z u = 0 \text{ at } z = 0$$
+
+is solved by finite differences (2nd-order leapfrog in time, conservative 2nd-order operator with harmonic μ on cell faces, mirror free surface, damping sponges, viscous damping with Q = 20 in the layer). 31 receivers along the surface record the horizontal motion. Each receiver's spectrum is divided by the spectrum of bare rock under the same noise, and f₀ is picked from that ratio and compared with the 1D rule f₀ = Vs₁/4H(x).
+
+**Simplification.** A scalar/SH model has only a horizontal (out-of-plane) component, so it cannot form a true H/V ratio. We use the site-to-reference spectral ratio instead. For a strong contrast it peaks near the same f₀ as field HVSR, but the amplitudes are not those of H/V.
+
+![HVSR app](figures/hvsr_app_screenshot.png)
+
+| file | contents |
+|---|---|
+| `hvsr.py` | All numerics: `Model` (two layers, dip, contrast, damping, 1D f₀ and the analytic transfer function), `noise_sources`, `simulate_noise` (the solver), Welch spectra, Konno–Ohmachi smoothing, `spectral_ratio`, `pick_f0`, `run_profile`. No UI code. |
+| `hvsr_app.py` | Panel UI: `panel serve hvsr_app.py --show`. Sliders for Vs₁, Vs₂, the density ratio, thickness, dip, Q, surface-wave sources and record length. It shows a live then looping wavefield animation, the ratio along the line, f₀ and the implied thickness vs the truth, and one receiver's ratio vs the 1D transfer function. A run takes about 12 s on the fast grid and is cached. |
+| `hvsr_verification.ipynb` | FD vs the analytic 1D SH transfer function (f₀ 2.087 vs 2.084 Hz, peak 5.17 vs 5.11, 1.5% L2 error). Convergence order 1.8 in Δx and 1.7 in Δt. Sponge length: 150 m gives 32% error at 1–4 Hz, 400 m gives 5%, 1000 m gives 1%. The sub-cell interface keeps f₀ within 1.6% between grid nodes. Flat layer under noise from all directions: f₀ within 3.6%. |
+| `hvsr_dipping_layer.ipynb` | **Main results** (below). About 10 min to run. |
+
+### Main findings (HVSR)
+- **Flat layer.** With noise from all directions, f₀ = Vs₁/4H within 4% at every receiver. The peak is about 12% below the 1D vertical-incidence value.
+- **Dip.** f₀ varies more smoothly along the line than Vs₁/4H(x), so converting with the 1D rule underestimates the depth. The mean error is −4% at 5°, −11% at 10° and −15% at 15°, and up to −25 to −35% under the thick side.
+- **Contrast.** A stronger contrast makes the 2D error larger, not smaller. At 10° dip the f₀ error is about 5% for a contrast of 2.6 but 20–35% for a contrast of 10, because a strong contrast traps the waves and lets them spread along the layer. The peak is taller and easier to pick, but harder to interpret with 1D theory.
+- **Surface-wave noise** from nearby lateral sources makes the ratio station-dependent.
+
+---
+
+# Earlier study: passive Love-wave site characterisation from ambient noise
+
 
 GPGN 436/536 final project (Zach).
 
@@ -53,9 +81,9 @@ conda activate ambient-noise
 
 No conda? Use a virtual environment instead: `python -m venv .venv`, activate it (`source .venv/bin/activate`, or `.venv\Scripts\activate` on Windows), then `pip install -r requirements.txt`.
 
-**Interactive apps.** Run `panel serve site_app.py --show` for the site-characterisation project. On first load it runs one FD solve (about 7 s on the default fast grid, 30–60 s on the standard 1 m grid). The wavefield is drawn live while it runs, then turns into a looping animation (an animated GIF, so it plays smoothly in any browser) of a source 250 m from the array. After that, every noise, array and picking control updates instantly, and each site model is cached. The DAS study app is `panel serve app.py --show`. The page opens right away and starts the station-pair solver, with a progress bar in the sidebar (the terminal also prints progress). The default *fast* grid (Δx = 100 m) takes a few seconds; *standard* (Δx = 50 m, the grid the notebooks use) takes about 15 s. Drag the noise sliders and they update instantly. The *DAS fiber* tab runs one FD problem per cable node (about 120 on the fast grid, run in parallel on all CPU cores; about a minute on a 4-core laptop) the first time you press *Run DAS analysis*. Every result is saved to `.cache/`, so anything you have already run reloads instantly, even after restarting the app.
+**Interactive apps.** The main app is `panel serve hvsr_app.py --show`. It runs the model and a bare-rock reference on load (about 12 s), animates the noise wavefield, and caches each model. Run `panel serve site_app.py --show` for the site-characterisation project. On first load it runs one FD solve (about 7 s on the default fast grid, 30–60 s on the standard 1 m grid). The wavefield is drawn live while it runs, then turns into a looping animation (an animated GIF, so it plays smoothly in any browser) of a source 250 m from the array. After that, every noise, array and picking control updates instantly, and each site model is cached. The DAS study app is `panel serve app.py --show`. The page opens right away and starts the station-pair solver, with a progress bar in the sidebar (the terminal also prints progress). The default *fast* grid (Δx = 100 m) takes a few seconds; *standard* (Δx = 50 m, the grid the notebooks use) takes about 15 s. Drag the noise sliders and they update instantly. The *DAS fiber* tab runs one FD problem per cable node (about 120 on the fast grid, run in parallel on all CPU cores; about a minute on a 4-core laptop) the first time you press *Run DAS analysis*. Every result is saved to `.cache/`, so anything you have already run reloads instantly, even after restarting the app.
 
-**Notebooks.** Run `jupyter notebook`, open a notebook and choose *Run All*. Run times on a 4-core laptop are roughly: `site_verification` 7 min (one 0.5 m grid run dominates), `site_characterization` 3 min, `verification` 5 min, `experiments` 5 min, `das_fiber` 10 min (240 FD runs), `array_correction` 10 min.
+**Notebooks.** Run `jupyter notebook`, open a notebook and choose *Run All*. Run times on a 4-core laptop are roughly: `hvsr_verification` 2 min, `hvsr_dipping_layer` 10 min, `site_verification` 7 min (one 0.5 m grid run dominates), `site_characterization` 3 min, `verification` 5 min, `experiments` 5 min, `das_fiber` 10 min (240 FD runs), `array_correction` 10 min.
 
 **From your own script (site project).**
 
@@ -146,6 +174,10 @@ This project was developed with Claude (Anthropic) used as an AI coding agent th
 - Plessix, R.-E. (2006). A review of the adjoint-state method for computing the gradient of a functional with geophysical applications. *GJI* 167, 495–503.
 - Kaipio, J., & Somersalo, E. (2007). Statistical inverse problems: discretization, model reduction and inverse crimes. *J. Comput. Appl. Math.* 198, 493–504.
 - Golub, G., & Pereyra, V. (2003). Separable nonlinear least squares: the variable projection method and its applications. *Inverse Problems* 19, R1–R26.
+- Nakamura, Y. (1989). A method for dynamic characteristics estimation of subsurface using microtremor on the ground surface. *QR of RTRI* 30(1), 25–33.
+- Konno, K., & Ohmachi, T. (1998). Ground-motion characteristics estimated from spectral ratio between horizontal and vertical components of microtremor. *BSSA* 88(1), 228–241.
+- Bard, P.-Y., & Bouchon, M. (1985). The two-dimensional resonance of sediment-filled valleys. *BSSA* 75(2), 519–541.
+- SESAME (2004). Guidelines for the implementation of the H/V spectral ratio technique on ambient vibrations. European Commission project WP12.
 - Snieder, R. (2004). Extracting the Green's function from the correlation of coda waves: a derivation based on stationary phase. *Phys. Rev. E* 69, 046610.
 - Wapenaar, K. (2004). Retrieving the elastodynamic Green's function of an arbitrary inhomogeneous medium by cross correlation. *PRL* 93, 254301.
 - Weaver, R., Froment, B., & Campillo, M. (2009). On the correlation of non-isotropically distributed ballistic scalar diffuse waves. *JASA* 126, 1817–1826.

@@ -6,7 +6,7 @@ layer thickness H(x) changes along the profile. We solve the SH (antiplane) wave
 
     rho u_tt = d/dx(mu du/dx) + d/dz(mu du/dz) + rho f,     mu = rho Vs^2,   mu du/dz = 0 at z = 0
 
-with the same conservative 2nd-order leapfrog scheme as love_waves.simulate_sh (harmonic mu
+with a conservative 2nd-order leapfrog scheme (harmonic mu
 on cell faces, mirror free surface, quadratic sponges), but driven by MANY simultaneous
 sources, each emitting its own band-limited random noise. Sources sit in the rock below the
 line (body waves arriving at all incidence angles) and near the surface beyond both ends
@@ -22,7 +22,69 @@ the same f0.
 """
 from dataclasses import dataclass
 import numpy as np
-import love_waves as L
+
+
+# --------------------------------------------------------------------------------------
+# grid and small helpers
+# --------------------------------------------------------------------------------------
+@dataclass
+class Grid:
+    """x-z grid. z = 0 is row 0 (free surface unless free_surface=False); x is centred on 0.
+    Sponges are added *outside* the physical region [-half_width, half_width] x [0, depth]."""
+    dx: float = 1.0               # grid spacing [m] (same in x and z)
+    half_width: float = 450.0     # physical half-width [m]
+    depth: float = 200.0          # physical depth [m]
+    side: float = 250.0           # side sponge width [m] (low-frequency waves need long sponges)
+    bottom: float = 100.0         # bottom sponge width [m]
+    cfl: float = 0.6              # beta_max dt / dx  (limit 1/sqrt 2)
+    free_surface: bool = True     # False: sponge on top as well (whole-space tests)
+    periodic_x: bool = False      # True: no side sponges, periodic in x (1D plane-wave tests)
+
+    def __post_init__(self):
+        self.ns = 0 if self.periodic_x else int(round(self.side / self.dx))
+        self.nb = int(round(self.bottom / self.dx))
+        self.nt_top = 0 if self.free_surface else self.nb
+        self.nx = 2 * int(round(self.half_width / self.dx)) + 1 + 2 * self.ns
+        self.nz = int(round(self.depth / self.dx)) + 1 + self.nb + self.nt_top
+        self.x = self.dx * (np.arange(self.nx) - (self.nx - 1) // 2)
+        self.z = self.dx * (np.arange(self.nz) - self.nt_top)
+
+    def ix(self, x):
+        return np.rint(np.asarray(x) / self.dx).astype(int) + (self.nx - 1) // 2
+
+    def iz(self, z):
+        return np.rint(np.asarray(z) / self.dx).astype(int) + self.nt_top
+
+    def sponge(self, vmax):
+        """Quadratic damping sigma(x, z) [1/s], zero in the physical region."""
+        i = np.arange(self.nx)
+        dxs = np.maximum(np.maximum(self.ns - i, i - (self.nx - 1 - self.ns)), 0) / max(self.ns, 1)
+        sx = dxs**2 * 20 * vmax / max(self.side, 1e-9)
+        dz = np.arange(self.nz)
+        bot = np.maximum(dz - (self.nz - 1 - self.nb), 0) / self.nb
+        top = np.maximum(self.nt_top - dz, 0) / max(self.nt_top, 1)
+        sz = (bot**2 + top**2) * 20 * vmax / self.bottom
+        return np.maximum(sx[None, :], sz[:, None])
+
+
+def harmonic(a, b):
+    """Harmonic mean, the correct average of mu across a half-point (series springs)."""
+    return 2 * a * b / (a + b)
+
+
+def vs30(b1, H, b2):
+    """Time-averaged shear speed over the top 30 m: 30 / sum(h_i / beta_i)."""
+    h1 = min(H, 30.0)
+    return 30.0 / (h1 / b1 + (30.0 - h1) / b2)
+
+
+def site_class(v):
+    """NEHRP site class from Vs30 [m/s]."""
+    for lim, c in [(1500, "A (hard rock)"), (760, "B (rock)"), (360, "C (very dense soil)"),
+                   (180, "D (stiff soil)")]:
+        if v > lim:
+            return c
+    return "E (soft soil)"
 
 
 # --------------------------------------------------------------------------------------
@@ -94,7 +156,7 @@ def default_grid(dx=2.5):
     """Physical box 600 m x 250 m. The sponges are long (300 m sides, 400 m bottom)
     because a rock wavelength at 2 Hz is 500 m: shorter sponges reflect the low
     frequencies and shift the resonance peaks by up to 10%."""
-    return L.Grid(dx=dx, half_width=300.0, depth=250.0, side=300.0, bottom=400.0, cfl=0.6)
+    return Grid(dx=dx, half_width=300.0, depth=250.0, side=300.0, bottom=400.0, cfl=0.6)
 
 
 # --------------------------------------------------------------------------------------
@@ -155,10 +217,10 @@ def simulate_noise(model, grid=None, T=40.0, rec_x=None, src=None, fband=(0.6, 9
     decim = max(1, int(round(rec_dt / dt)))
 
     mu = rho * beta ** 2
-    mux = L.harmonic(mu[:, 1:], mu[:, :-1])
-    muz = L.harmonic(mu[1:], mu[:-1])
+    mux = harmonic(mu[:, 1:], mu[:, :-1])
+    muz = harmonic(mu[1:], mu[:-1])
     if g.periodic_x:
-        mux = L.harmonic(mu, np.roll(mu, -1, axis=1))
+        mux = harmonic(mu, np.roll(mu, -1, axis=1))
     k = dt ** 2 / (rho * g.dx ** 2)
     s = 0.5 * (g.sponge(beta.max()) + sig) * dt
     a_prev, a_den = 1 - s, 1 / (1 + s)

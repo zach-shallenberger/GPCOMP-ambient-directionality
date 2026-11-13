@@ -19,7 +19,6 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from PIL import Image
 import hvsr as H
-import love_waves as L
 
 pn.extension(sizing_mode="stretch_width")
 
@@ -31,7 +30,7 @@ REC_X = np.arange(-150.0, 150.1, 10.0)                  # surface receivers
 
 def run_model(model, dx, T, n_surface, progress=None, on_snapshot=None):
     """Site + reference runs for one model, cached in memory (all sessions) and on disk."""
-    key = (f"hvsr_v1_dx{dx}_T{T}_s{n_surface}_v{model.vs1:.0f}-{model.vs2:.0f}_r{model.rho1:.0f}-{model.rho2:.0f}"
+    key = (f"hvsr_v2_dx{dx}_T{T}_s{n_surface}_v{model.vs1:.0f}-{model.vs2:.0f}_r{model.rho1:.0f}-{model.rho2:.0f}"
            f"_h{model.h0:.1f}_d{model.dip:.1f}_q{model.q1:.0f}")
     mem = pn.state.cache.setdefault("hvsr", {})
     if key in mem:
@@ -262,8 +261,8 @@ def station_view(b, station, *_):
     H_pred = m.vs1 / (4 * f0[j])
     T0 = 1 / f0[j]
     floors = max(1, int(round(10 * T0)))            # rule of thumb: building period ~ 0.1 s per storey
-    v_pred = L.vs30(m.vs1, H_pred, m.vs2)
-    v_true = L.vs30(m.vs1, Hj, m.vs2)
+    v_pred = H.vs30(m.vs1, H_pred, m.vs2)
+    v_true = H.vs30(m.vs1, Hj, m.vs2)
     risk = "high" if A0[j] >= 4 else "moderate" if A0[j] >= 2 else "low"
     color = {"high": "#d62728", "moderate": "#ff7f0e", "low": "#2ca02c"}[risk]
     tiles = pn.FlexBox(
@@ -271,7 +270,7 @@ def station_view(b, station, *_):
         tile("Predicted peak amplification", f"×{A0[j]:.1f}", "", f"true 1D ×{A_true:.1f}; {risk} amplification", color),
         tile("Depth to rock, Vs₁/4f₀", f"{H_pred:.0f}", "m", f"true {Hj:.1f} m ({100 * (H_pred / Hj - 1):+.0f} %)", "#9467bd"),
         tile("Buildings at risk of resonance", f"~{floors}", "storeys", f"natural period ≈ T₀ = {T0:.2f} s", color),
-        tile("Vs30 from H/V depth", f"{v_pred:.0f}", "m/s", f"class {L.site_class(v_pred)[0]}; true {v_true:.0f} m/s, class {L.site_class(v_true)[0]}", "#8c564b"),
+        tile("Vs30 from H/V depth", f"{v_pred:.0f}", "m/s", f"class {H.site_class(v_pred)[0]}; true {v_true:.0f} m/s, class {H.site_class(v_true)[0]}", "#8c564b"),
         flex_wrap="wrap", gap="8px", sizing_mode="stretch_width")
     note = pn.pane.Markdown(
         "How the prediction works: f₀ and the peak height come straight from the H/V curve; the depth uses "

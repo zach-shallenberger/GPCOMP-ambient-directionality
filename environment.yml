@@ -1,4 +1,4 @@
-# Conda environment for the directional-noise interferometry project.
+# Conda environment for the HVSR site-response project.
 #   conda env create -f environment.yml
 #   conda activate ambient-noise
 name: ambient-noise
@@ -7,7 +7,7 @@ channels:
 dependencies:
   - python=3.12
   - numpy>=1.26
-  - scipy>=1.11
+  - pillow>=10
   - matplotlib>=3.8
   - panel>=1.4
   - jupyter

@@ -15,6 +15,7 @@ is solved by finite differences (2nd-order leapfrog in time, conservative 2nd-or
 | `hvsr.py` | All numerics: `Model` (two layers, dip, contrast, damping, 1D f₀ and the analytic transfer function), `noise_sources`, `simulate_noise` (the solver), Welch spectra, Konno–Ohmachi smoothing, `spectral_ratio`, `pick_f0`, `run_profile`. No UI code. |
 | `hvsr_app.py` | Panel UI: `panel serve hvsr_app.py --show`. Sliders for Vs₁, Vs₂, the density ratio, thickness, dip, Q, surface-wave sources and record length. It shows a live then looping wavefield animation, the ratio along the line, and f₀ and the implied thickness vs the truth. After the run, a station slider picks which station's H/V curve to show next to the true 1D amplification, with a tile of site-amplification predictions from that curve: f₀, peak amplification, depth to rock, the building heights at risk of resonance (about 0.1 s of natural period per storey) and Vs30, each against the true value. A run takes about 12 s on the fast grid and is cached. |
 | `hvsr_verification.ipynb` | FD vs the analytic 1D SH transfer function (f₀ 2.087 vs 2.084 Hz, peak 5.17 vs 5.11, 1.5% L2 error). Convergence order 1.8 in Δx and 1.7 in Δt. Sponge length: 150 m gives 32% error at 1–4 Hz, 400 m gives 5%, 1000 m gives 1%. The sub-cell interface keeps f₀ within 1.6% between grid nodes. Flat layer under noise from all directions: f₀ within 3.6%. |
+| `hvsr_analytical_verification.ipynb` | The solver against closed-form results for a layer over a half-space: the full 1D SH transfer function, f₀ = Vs₁/4H for many thicknesses and speeds, higher modes at (2n+1)f₀ with equal heights, peak amplitude = impedance contrast C undamped and 1/(1/C + π/4Q) damped (whether the contrast comes from density or velocity), 2nd-order grid convergence of all of these, and the recovery of the local 1D rule f₀(x) = Vs₁/4H(x) as the dip goes to 0. About 3 min to run. |
 | `hvsr_dipping_layer.ipynb` | **Main results** (below). About 10 min to run. |
 
 ## Main findings
@@ -36,7 +37,7 @@ No conda? Use a virtual environment instead: `python -m venv .venv`, activate it
 
 **App.** `panel serve hvsr_app.py --show`. On load it runs the default model and its bare-rock reference (about 12 s on the fast grid). The wavefield is drawn live while it runs, then loops as an animated GIF. Change the model sliders and press *Run solver*. The station slider and the smoothing control update instantly. Every model is saved to `.cache/`, so it reloads instantly later.
 
-**Notebooks.** Run `jupyter notebook`, open a notebook and choose *Run All*: `hvsr_verification` takes about 2 min, `hvsr_dipping_layer` about 10 min.
+**Notebooks.** Run `jupyter notebook`, open a notebook and choose *Run All*: `hvsr_verification` takes about 2 min, `hvsr_analytical_verification` about 3 min, `hvsr_dipping_layer` about 10 min.
 
 **From your own script.**
 

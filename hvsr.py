@@ -4,13 +4,18 @@ HVSR-style site response of a dipping soft layer, from simulated ambient noise.
 Model: a 2D depth slice (x, z) with a soft layer over rock. The interface dips, so the
 layer thickness H(x) changes along the profile. We solve the SH (antiplane) wave equation
 
-    rho u_tt = d/dx(mu du/dx) + d/dz(mu du/dz) + rho f,     mu = rho Vs^2,   mu du/dz = 0 at z = 0
+    rho u_tt + rho sigma u_t = d/dx(mu du/dx) + d/dz(mu du/dz) + rho f,     mu = rho Vs^2
 
-with a conservative 2nd-order leapfrog scheme (harmonic mu
-on cell faces, mirror free surface, quadratic sponges), but driven by MANY simultaneous
-sources, each emitting its own band-limited random noise. Sources sit in the rock below the
-line (body waves arriving at all incidence angles) and near the surface beyond both ends
-(surface waves arriving from the sides).
+with a conservative 2nd-order leapfrog scheme (harmonic mu on cell faces), driven by MANY
+simultaneous sources, each emitting its own band-limited random noise. Sources sit in the
+rock below the line (body waves arriving at all incidence angles) and near the surface
+beyond both ends (surface waves arriving from the sides).
+
+Initial conditions: the medium is at rest, u = u_t = 0 at t = 0 (u = u_prev = 0 in the loop).
+Boundary conditions: traction-free surface mu du/dz = 0 at z = 0 (mirror ghost node, so the
+surface row gets twice the downward flux); quadratic absorbing sponges (sigma > 0) outside
+the physical box on the sides and bottom; optionally periodic in x for the plane-wave tests.
+sigma also holds a viscous damping in the soft layer (Q = q1 at the local f0).
 
 u is the horizontal (out-of-plane) displacement, so the surface records are the horizontal
 component. A scalar/SH model has no vertical component, so instead of a true H/V ratio we
@@ -239,7 +244,7 @@ def simulate_noise(model, grid=None, T=40.0, rec_x=None, src=None, fband=(0.6, 9
     sd = max(1, int(round(4.0 / g.dx)))                     # snapshots on a ~4-5 m grid
     snap_steps = {int(round(ts / dt)): round(float(ts), 3) for ts in snapshots}
 
-    u_prev, u = np.zeros((g.nz, g.nx)), np.zeros((g.nz, g.nx))
+    u_prev, u = np.zeros((g.nz, g.nx)), np.zeros((g.nz, g.nx))   # initial conditions: at rest
     Lu = np.zeros_like(u)
     rec = np.zeros(((nt - 1) // decim + 1, len(jr)))
     snaps = {}

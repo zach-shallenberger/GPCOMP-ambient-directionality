@@ -1,0 +1,7 @@
+{
+  "_comment": "Versions the browser app runs with. Pyodide and Plotly are loaded from cdn.jsdelivr.net at these exact versions (see worker.js and index.html).",
+  "pyodide": "0.27.2",
+  "python": "3.12.7",
+  "pyodide_packages": { "numpy": "2.0.2" },
+  "plotly.js-dist-min": "2.35.2"
+}

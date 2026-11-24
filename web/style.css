@@ -1,0 +1,42 @@
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --ink: #1d2330; --muted: #5b6475; --line: #d9dde5;
+  --accent: #1f6feb; --accent-ink: #ffffff;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { background: #0d4f8b; color: #fff; padding: 14px 20px; }
+header h1 { margin: 0 0 4px; font-size: 22px; }
+header p { margin: 0; opacity: 0.9; font-size: 14px; }
+.layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px; }
+aside { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px;
+  align-self: start; position: sticky; top: 16px; }
+aside h2 { font-size: 16px; margin: 14px 0 6px; }
+aside h2:first-child { margin-top: 0; }
+.hint { font-weight: 400; color: var(--muted); font-size: 13px; }
+label { display: block; margin: 8px 0; font-size: 14px; }
+input[type=range], select { width: 100%; margin-top: 4px; }
+select { padding: 4px; font: inherit; }
+button { width: 100%; margin-top: 12px; padding: 9px; font: inherit; font-weight: 600; border: 0;
+  border-radius: 6px; background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+button:disabled { opacity: 0.55; cursor: wait; }
+progress { width: 100%; margin-top: 8px; }
+.note { color: var(--muted); font-size: 13px; }
+main { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
+.card h2 { font-size: 16px; margin: 4px 0 8px; }
+canvas { width: 100%; height: auto; display: block; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.plot { min-height: 340px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.tile { border: 1px solid var(--c); border-left: 6px solid var(--c); border-radius: 6px; padding: 6px 10px; }
+.tile .name { font-size: 12px; color: var(--muted); }
+.tile .val { font-size: 24px; font-weight: 600; line-height: 1.2; }
+.tile .val span { font-size: 13px; font-weight: 400; }
+.tile .sub { font-size: 12px; color: var(--muted); }
+a { color: var(--accent); }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; padding: 16px; }
+  aside { position: static; }
+  .grid2 { grid-template-columns: 1fr; }
+}

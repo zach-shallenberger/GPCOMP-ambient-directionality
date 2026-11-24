@@ -1,0 +1,56 @@
+# Builds the static site (web/ plus the simulation module hvsr.py) and deploys it to
+# GitHub Pages. There is no backend: the Python solver runs in the visitor's browser
+# through Pyodide in a Web Worker.
+name: Deploy app to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Smoke-test the simulation module the site will run
+        run: |
+          pip install "numpy>=1.26"
+          python -c "import hvsr as H; r = H.run_profile(H.Model(), H.default_grid(10.0), T=20.0); print('f0 at x=0:', r['f0'][15])"
+
+      - name: Assemble the site
+        run: |
+          mkdir _site
+          cp web/index.html web/style.css web/app.js web/worker.js web/bridge.py web/versions.json _site/
+          cp hvsr.py _site/
+          touch _site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

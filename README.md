@@ -27,8 +27,8 @@ is solved by finite differences (2nd-order leapfrog in time, conservative 2nd-or
 ## Running it yourself
 
 ```bash
-git clone https://github.com/zach-shallenberger/GPCOMP-ambient-directionality.git
-cd GPCOMP-ambient-directionality
+git clone https://github.com/zach-shallenberger/GPCOMP-ambient-resonance.git
+cd GPCOMP-ambient-resonance
 conda env create -f environment.yml     # isolated env named "ambient-noise"
 conda activate ambient-noise
 ```
